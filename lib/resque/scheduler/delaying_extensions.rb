@@ -6,6 +6,8 @@ require_relative '../scheduler'
 module Resque
   module Scheduler
     module DelayingExtensions
+      DEFAULT_BATCH_SIZE = 100
+
       # This method is nearly identical to +enqueue+ only it also
       # takes a timestamp which will be used to schedule the job
       # for queueing.  Until timestamp is in the past, the job will
@@ -161,12 +163,13 @@ module Resque
         end
       end
 
-      # Given a block, remove jobs that return true from a block
+      # Given a block, remove jobs that return true from a block.
       #
       # This allows for removal of delayed jobs that have arguments matching
-      # certain criteria
+      # certain criteria.
       #
-      # Give you only the arguments passed to the jobs at its creation :
+      # Give you only the arguments passed to the jobs at its creation:
+      #
       #   For example, with the following job:
       #
       #     Resque.enqueue_at(
@@ -183,16 +186,47 @@ module Resque
       def remove_delayed_selection(klass = nil)
         raise ArgumentError, 'Please supply a block' unless block_given?
 
+        remove_delayed_selection_with_batch_size(DEFAULT_BATCH_SIZE, klass) do |payload|
+          yield(payload)
+        end
+      end
+
+      # Given a block, remove jobs that return true from a block.
+      #
+      # This allows for removal of delayed jobs that have arguments matching
+      # certain criteria.
+      #
+      # Give you only the arguments passed to the jobs at its creation:
+      #
+      #   For example, with the following job:
+      #
+      #     Resque.enqueue_at(
+      #       5.days.from_now,
+      #       SendFollowUpEmail,
+      #       :account_id => 0,
+      #       :user_id => 1
+      #     )
+      #
+      #   It gives you this as parameter for your block:
+      #
+      #     [{"account_id": 0, "user_id": 1}]
+      #
+      def remove_delayed_selection_with_batch_size(batch_size, klass = nil)
+        raise ArgumentError, 'Please supply a block' unless block_given?
+
         do_remove_delayed_selection(
-          find_delayed_selection(klass) { |payload| yield(payload['args']) }
+          find_delayed_selection_with_batch_size(batch_size, klass) do |payload|
+            yield(payload['args'])
+          end
         )
       end
 
-      # Given a block, remove jobs that return true from a block
+      # Given a block, remove jobs that return true from a block.
       #
-      # This allows for removal of delayed jobs matching certain criteria
+      # This allows for removal of delayed jobs matching certain criteria.
       #
       # Give you all the infos of the job.
+      #
       #   For example, with the following job:
       #
       #     Resque.enqueue_at(
@@ -224,32 +258,108 @@ module Resque
       def remove_delayed_selection_with_all_job_infos
         raise ArgumentError, 'Please supply a block' unless block_given?
 
-        do_remove_delayed_selection(find_delayed_selection { |payload| yield(payload) })
+        remove_delayed_selection_with_all_job_infos_with_batch_size(
+          DEFAULT_BATCH_SIZE
+        ) { |payload| yield(payload) }
       end
 
-      # Given a block, change the execution date of jobs that
-      # return true from a block
+      # Given a block, remove jobs that return true from a block.
       #
-      # Same signature that the
-      # #remove_delayed_selection_with_all_job_infos method
+      # This allows for removal of delayed jobs matching certain criteria.
+      #
+      # Give you all the infos of the job.
+      #
+      #   For example, with the following job:
+      #
+      #     Resque.enqueue_at(
+      #       5.days.from_now,
+      #       SendFollowUpEmail,
+      #       :account_id => 0,
+      #       :user_id => 1
+      #     )
+      #
+      #   It gives you this as parameter for your block:
+      #
+      #     {
+      #       "class": "SendFollowUpEmail",
+      #       "args": [{"account_id": 0, "user_id": 1}],
+      #       "queue": "queue_name"
+      #     }
+      #
+      # Useful if, in your passed block, you want to match by
+      # class and/or queue (not only args) !
+      #
+      # For example:
+      #
+      #   Resque.remove_delayed_selection_with_all_job_infos(1000) { |job|
+      #     [SendFollowUpEmail, SendFollowUpSms].any? { |klass|
+      #       klass.to_s == job["class"]
+      #     } && job["args"][0]['account_id'] == current_account.id]
+      #   }
+      #
+      def remove_delayed_selection_with_all_job_infos_with_batch_size(batch_size)
+        raise ArgumentError, 'Please supply a block' unless block_given?
+
+        do_remove_delayed_selection(
+          find_delayed_selection_with_batch_size(batch_size) do |payload|
+            yield(payload)
+          end
+        )
+      end
+
+      # Given a block, change the execution date of jobs that return true from a block.
+      #
+      # Same signature that the #remove_delayed_selection_with_all_job_infos method.
       #
       def change_delayed_selection_timestamp(timestamp)
         raise ArgumentError, 'Please supply a block' unless block_given?
 
-        found_jobs = find_delayed_selection { |payload| yield(payload) }
+        change_delayed_selection_timestamp_with_batch_size(
+          DEFAULT_BATCH_SIZE,
+          timestamp
+        ) { |payload| yield(payload) }
+      end
+
+      # Given a block, change the execution date of jobs that return true from a block.
+      #
+      # Same signature that the #remove_delayed_selection_with_all_job_infos method.
+      #
+      def change_delayed_selection_timestamp_with_batch_size(batch_size, timestamp)
+        raise ArgumentError, 'Please supply a block' unless block_given?
+
+        found_jobs = find_delayed_selection_with_batch_size(batch_size) do |payload|
+          yield(payload)
+        end
         count = do_remove_delayed_selection(found_jobs)
         found_jobs.each { |encoded_job| delayed_push(timestamp, encoded_job, false) }
         count
       end
 
-      # Given a block, enqueue jobs now that return true from a block
+      # Given a block, enqueue jobs now that return true from a block.
       #
       # This allows for enqueuing of delayed jobs that have arguments matching
-      # certain criteria
+      # certain criteria.
+      #
       def enqueue_delayed_selection(klass = nil)
         raise ArgumentError, 'Please supply a block' unless block_given?
 
-        found_jobs = find_delayed_selection(klass) { |payload| yield(payload['args']) }
+        enqueue_delayed_selection_with_batch_size(
+          DEFAULT_BATCH_SIZE,
+          klass
+        ) { |payload| yield(payload) }
+      end
+
+      # Given a block, enqueue jobs now that return true from a block.
+      #
+      # This allows for enqueuing of delayed jobs that have arguments matching
+      # certain criteria.
+      #
+      def enqueue_delayed_selection_with_batch_size(batch_size, klass = nil)
+        raise ArgumentError, 'Please supply a block' unless block_given?
+
+        found_jobs = find_delayed_selection_with_batch_size(batch_size, klass) do |payload|
+          yield(payload['args'])
+        end
         found_jobs.reduce(0) do |sum, encoded_job|
           decoded_job = decode(encoded_job)
           klass = Util.constantize(decoded_job['class'])
@@ -257,17 +367,34 @@ module Resque
         end
       end
 
-      # Given a block, find jobs that return true from a block
+      # Given a block, find jobs that return true from a block.
       #
       # This allows for finding of delayed jobs that have arguments matching
-      # certain criteria
+      # certain criteria.
+      #
       def find_delayed_selection(klass = nil)
         raise ArgumentError, 'Please supply a block' unless block_given?
 
+        find_delayed_selection_with_batch_size(DEFAULT_BATCH_SIZE, klass) do |payload|
+          yield(payload)
+        end
+      end
+
+      # Given a block, find jobs that return true from a block.
+      #
+      # This allows for finding of delayed jobs that have arguments matching
+      # certain criteria.
+      #
+      def find_delayed_selection_with_batch_size(batch_size, klass = nil)
+        raise ArgumentError, 'Please supply a block' unless block_given?
+
         timestamps = redis.zrange(:delayed_queue_schedule, 0, -1)
+        is_klass_nil = klass.nil?
+        klass_s = klass.to_s
+        klass_key = 'class'
 
         # Beyond 100 there's almost no improvement in speed
-        found = timestamps.each_slice(100).map do |timestamps_group|
+        found = timestamps.each_slice(batch_size).map do |timestamps_group|
           jobs = redis.pipelined do |r|
             timestamps_group.each do |timestamp|
               r.lrange(delayed_key(timestamp), 0, -1)
@@ -276,12 +403,9 @@ module Resque
 
           jobs.flatten.select do |payload|
             decoded_payload = decode(payload)
-            if decoded_payload.nil?
-              false
-            else
-              relevant_class = (klass.nil? || klass.to_s == decoded_payload['class'])
-              relevant_class && yield(decoded_payload)
-            end
+            !decoded_payload.nil? &&
+              (is_klass_nil || klass_s == decoded_payload[klass_key]) &&
+              yield(decoded_payload)
           end
         end
 
